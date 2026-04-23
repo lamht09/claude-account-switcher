@@ -1,0 +1,24 @@
+name: Go CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test-go:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Go test
+        env:
+          CA_FORCE_FILE_BACKUP_CREDENTIALS: "1"
+        run: go test ./...

@@ -1,0 +1,29 @@
+# Build artifacts
+/ca
+/mac-ca
+/bin/
+/build/
+/dist/
+/source/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go test and coverage files
+*.test
+*.out
+coverage.out
+
+# Environment files
+.env
+.env.*
+
+# IDE/editor folders
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
