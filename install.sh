@@ -54,3 +54,23 @@ mkdir -p "$INSTALL_DIR"
 tar -xzf "$TMP_DIR/$ASSET" -C "$TMP_DIR"
 install "$TMP_DIR/$BIN_IN_ARCHIVE" "$INSTALL_DIR/$BIN_NAME"
 echo "Installed $BIN_NAME to $INSTALL_DIR/$BIN_NAME"
+
+# Persist PATH update for future shell sessions when needed.
+PATH_EXPORT_LINE="export PATH=\"$INSTALL_DIR:\$PATH\""
+if ! printf '%s' ":$PATH:" | grep -Fq ":$INSTALL_DIR:"; then
+  shell_name="$(basename "${SHELL:-}")"
+  case "$shell_name" in
+    zsh) rc_file="$HOME/.zshrc" ;;
+    bash) rc_file="$HOME/.bashrc" ;;
+    *) rc_file="$HOME/.profile" ;;
+  esac
+
+  touch "$rc_file"
+  if ! grep -Fq "$PATH_EXPORT_LINE" "$rc_file"; then
+    printf '\n# Added by %s installer\n%s\n' "$BIN_NAME" "$PATH_EXPORT_LINE" >> "$rc_file"
+    echo "Added $INSTALL_DIR to PATH in $rc_file"
+    echo "Run: . \"$rc_file\""
+  else
+    echo "PATH entry already exists in $rc_file"
+  fi
+fi
