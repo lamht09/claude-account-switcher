@@ -29,7 +29,10 @@ func main() {
 		fmt.Printf("ca %s\n", version)
 		return
 	}
-	output.SetDebug(cfg.debug)
+	if cfg.showHelp {
+		printHelp()
+		return
+	}
 
 	if !cfg.skipRootCheck && isRoot() {
 		fmt.Fprintln(os.Stderr, output.Yellow("Safety check: do not run this tool as root (except inside a container)."))
@@ -53,10 +56,10 @@ type cliConfig struct {
 	status        bool
 	purge         bool
 	repair        bool
-	debug         bool
 	tokenStatus   bool
 	slot          int
 	showVersion   bool
+	showHelp      bool
 	skipRootCheck bool
 }
 
@@ -64,7 +67,6 @@ func parseCLIArgs(args []string) (cliConfig, error) {
 	var cfg cliConfig
 	fs := flag.NewFlagSet("ca", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	fs.BoolVar(&cfg.debug, "debug", false, "")
 	fs.BoolVar(&cfg.showVersion, "version", false, "")
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
@@ -74,7 +76,8 @@ func parseCLIArgs(args []string) (cliConfig, error) {
 	}
 	remaining := fs.Args()
 	if len(remaining) == 0 {
-		return cfg, errors.New("exactly one action is required: add | remove | list | switch | switch-to | status | purge | repair")
+		cfg.showHelp = true
+		return cfg, nil
 	}
 
 	command := remaining[0]
@@ -136,8 +139,17 @@ func parseCLIArgs(args []string) (cliConfig, error) {
 			return cfg, fmt.Errorf("unexpected positional arguments for repair: %v", commandArgs)
 		}
 		cfg.repair = true
+	case "help":
+		if len(commandArgs) != 0 {
+			return cfg, fmt.Errorf("unexpected positional arguments for help: %v", commandArgs)
+		}
+		cfg.showHelp = true
 	default:
 		return cfg, fmt.Errorf("unknown command: %s", command)
+	}
+
+	if cfg.showHelp {
+		return cfg, nil
 	}
 
 	actionCount := 0
@@ -240,4 +252,22 @@ func isNumericIdentifier(v string) bool {
 
 func isValidEmail(v string) bool {
 	return emailPattern.MatchString(v)
+}
+
+func printHelp() {
+	fmt.Println("Usage: ca <command> [options]")
+	fmt.Println("")
+	fmt.Println("Commands:")
+	fmt.Println("  add [--slot N]             Add current logged-in account")
+	fmt.Println("  remove <slot|email>        Remove account by slot or email")
+	fmt.Println("  list [--token-status]      List managed accounts")
+	fmt.Println("  switch                     Switch to next account")
+	fmt.Println("  switch-to <slot|email>     Switch to a specific account")
+	fmt.Println("  status                     Show current live profile")
+	fmt.Println("  purge                      Remove all managed backup data")
+	fmt.Println("  repair                     Repair managed account metadata")
+	fmt.Println("  help                       Show this help message")
+	fmt.Println("")
+	fmt.Println("Global flags:")
+	fmt.Println("  --version                  Show tool version")
 }
