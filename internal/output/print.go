@@ -3,11 +3,9 @@ package output
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
+	"os"
 )
-
-var debugEnabled bool
 
 func PrintJSON(v any) {
 	body, _ := json.MarshalIndent(v, "", "  ")
@@ -16,17 +14,6 @@ func PrintJSON(v any) {
 
 func Info(msg string, args ...any) {
 	fmt.Printf(msg+"\n", args...)
-}
-
-func SetDebug(enabled bool) {
-	debugEnabled = enabled
-}
-
-func Debug(msg string, args ...any) {
-	if !debugEnabled {
-		return
-	}
-	fmt.Fprintf(os.Stderr, "DEBUG: "+msg+"\n", args...)
 }
 
 func Bold(s string) string {

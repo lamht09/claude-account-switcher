@@ -69,6 +69,26 @@ func TestParseCLIArgsVersionOnly(t *testing.T) {
 	}
 }
 
+func TestParseCLIArgsNoCommandShowsHelp(t *testing.T) {
+	cfg, err := parseCLIArgs([]string{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.showHelp {
+		t.Fatalf("expected showHelp for empty args, got %#v", cfg)
+	}
+}
+
+func TestParseCLIArgsHelpCommand(t *testing.T) {
+	cfg, err := parseCLIArgs([]string{"help"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.showHelp {
+		t.Fatalf("expected showHelp for help command, got %#v", cfg)
+	}
+}
+
 func TestParseCLIArgsRemoveAccountIdentifierValidation(t *testing.T) {
 	if _, err := parseCLIArgs([]string{"remove", "not-an-email"}); err == nil {
 		t.Fatal("expected validation error for non-numeric, non-email identifier")
