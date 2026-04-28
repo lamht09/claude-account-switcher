@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -15,7 +15,12 @@ import (
 
 const (
 	cacheTTL         = 24 * time.Hour
-	latestReleaseURL = "https://api.github.com/repos/lamht09/claude-account-switcher/releases/latest"
+)
+
+var (
+	latestReleaseURL      = "https://api.github.com/repos/lamht09/claude-account-switcher/releases/latest"
+	latestReleasePageURL  = "https://github.com/lamht09/claude-account-switcher/releases/latest"
+	updateCheckHTTPClient = &http.Client{Timeout: 2 * time.Second}
 )
 
 type latestRelease struct {
@@ -37,7 +42,7 @@ func Check(currentVersion string) string {
 	if latest == "" {
 		return ""
 	}
-	if isGreaterVersion(strings.TrimPrefix(latest, "v"), strings.TrimPrefix(currentVersion, "v")) {
+	if isGreaterVersion(normalizeVersion(latest), normalizeVersion(currentVersion)) {
 		return "A newer version of claude-account-switcher is available (" + latest + "). You are using " + currentVersion + ". Consider upgrading!"
 	}
 	return ""
@@ -78,8 +83,32 @@ func fetchLatest() string {
 		return ""
 	}
 	req.Header.Set("User-Agent", "claude-account-switcher/1.0")
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Do(req)
+	if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := updateCheckHTTPClient.Do(req)
+	if err != nil {
+		return fetchLatestFromReleasePage()
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return fetchLatestFromReleasePage()
+	}
+	var latest latestRelease
+	if err := json.NewDecoder(resp.Body).Decode(&latest); err != nil {
+		return fetchLatestFromReleasePage()
+	}
+	return latest.TagName
+}
+
+func fetchLatestFromReleasePage() string {
+	req, err := http.NewRequest(http.MethodGet, latestReleasePageURL, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("User-Agent", "claude-account-switcher/1.0")
+	resp, err := updateCheckHTTPClient.Do(req)
 	if err != nil {
 		return ""
 	}
@@ -88,11 +117,36 @@ func fetchLatest() string {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return ""
 	}
-	var latest latestRelease
-	if err := json.NewDecoder(resp.Body).Decode(&latest); err != nil {
+	finalURL := resp.Request.URL
+	if finalURL == nil {
 		return ""
 	}
-	return latest.TagName
+	tag := tagFromReleaseURL(finalURL)
+	if tag == "" {
+		return ""
+	}
+	return tag
+}
+
+func tagFromReleaseURL(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	if parts[len(parts)-2] != "tag" {
+		return ""
+	}
+	tag := strings.TrimSpace(parts[len(parts)-1])
+	if tag == "" || strings.EqualFold(tag, "latest") {
+		return ""
+	}
+	if !strings.HasPrefix(tag, "v") {
+		tag = "v" + tag
+	}
+	return tag
 }
 
 func isGreaterVersion(a, b string) bool {
@@ -121,14 +175,24 @@ func isGreaterVersion(a, b string) bool {
 	return false
 }
 
+func normalizeVersion(v string) string {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(v, "v")
+	v = strings.TrimPrefix(v, "V")
+	return v
+}
+
 func parseVersion(v string) []int {
 	parts := strings.Split(v, ".")
 	out := make([]int, 0, len(parts))
 	for _, part := range parts {
-		n, err := strconv.Atoi(strings.TrimSpace(part))
-		if err != nil {
-			out = append(out, 0)
-			continue
+		part = strings.TrimSpace(part)
+		n := 0
+		for _, c := range part {
+			if c < '0' || c > '9' {
+				break
+			}
+			n = n*10 + int(c-'0')
 		}
 		out = append(out, n)
 	}
