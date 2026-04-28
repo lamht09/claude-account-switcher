@@ -1,8 +1,10 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -408,6 +410,95 @@ func TestListFetchesUsageInParallel(t *testing.T) {
 	}
 	if atomic.LoadInt32(&maxInFlight) < 2 {
 		t.Fatalf("expected concurrent usage fetches, max in-flight=%d", maxInFlight)
+	}
+}
+
+func TestStatusShowsUsageAndOAuthSafeFields(t *testing.T) {
+	sw := setupTestSwitcher(t)
+	setLiveAccount(t, sw, "status@example.com", "org-status", "Status Org", "token-status")
+
+	if err := sw.store.WriteAccountBackup("1", "status@example.com", mustJSON(t, map[string]any{
+		"oauthAccount": map[string]any{
+			"emailAddress":     "status@example.com",
+			"organizationUuid": "org-status",
+			"accountUuid":      "acc-org-status",
+		},
+	}), `{"claudeAiOauth":{"accessToken":"token-status"}}`); err != nil {
+		t.Fatalf("write backup: %v", err)
+	}
+	if err := sw.store.WriteSequence(&domain.SequenceData{
+		Sequence:            []int{1},
+		ActiveAccountNumber: intPtr(1),
+		Accounts: map[string]domain.Account{
+			"1": {Email: "status@example.com", OrganizationUUID: "org-status", UUID: "acc-org-status"},
+		},
+	}); err != nil {
+		t.Fatalf("write sequence: %v", err)
+	}
+
+	origFetch := fetchUsageForAccount
+	fetchUsageForAccount = func(credentials string, isActive bool) (*oauth.UsageResult, string, bool) {
+		return &oauth.UsageResult{
+			FiveHour: &oauth.UsageWindow{Pct: 42, Clock: "13:00", Countdown: "2h"},
+			SevenDay: &oauth.UsageWindow{Pct: 64, Clock: "Mon 10:00", Countdown: "3d"},
+		}, credentials, false
+	}
+	t.Cleanup(func() { fetchUsageForAccount = origFetch })
+
+	out, runErr := captureStdout(func() error { return sw.Status() })
+	if runErr != nil {
+		t.Fatalf("status: %v", runErr)
+	}
+
+	for _, want := range []string{
+		"Current profile:",
+		"slot 1",
+		"Managed slots:",
+		"Usage:",
+		"5h:  42%",
+		"7d:  64%",
+		"OAuth:",
+		"email=status@example.com",
+		"org=org-status",
+		"account=acc-org-status",
+		"oauth:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected status output to contain %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestStatusUsageFallbackWhenCredentialsUnavailable(t *testing.T) {
+	sw := setupTestSwitcher(t)
+	liveCfgPath := filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), ".claude.json")
+	if err := sw.store.WriteLiveConfig(liveCfgPath, map[string]any{
+		"oauthAccount": map[string]any{
+			"emailAddress":     "outside@example.com",
+			"organizationUuid": "org-outside",
+			"accountUuid":      "acc-outside",
+		},
+	}); err != nil {
+		t.Fatalf("write live config: %v", err)
+	}
+
+	out, runErr := captureStdout(func() error { return sw.Status() })
+	if runErr != nil {
+		t.Fatalf("status: %v", runErr)
+	}
+	for _, want := range []string{
+		"outside managed slots",
+		"Usage:",
+		"usage stats unavailable",
+		"OAuth:",
+		"email=outside@example.com",
+		"org=org-outside",
+		"account=acc-outside",
+		"oauth: unavailable",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected fallback output to contain %q, got:\n%s", want, out)
+		}
 	}
 }
 
@@ -935,4 +1026,21 @@ func mustJSON(t *testing.T, v map[string]any) string {
 		t.Fatalf("marshal json: %v", err)
 	}
 	return string(out)
+}
+
+func captureStdout(run func() error) (string, error) {
+	origStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		return "", err
+	}
+	os.Stdout = w
+	runErr := run()
+	_ = w.Close()
+	os.Stdout = origStdout
+
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	_ = r.Close()
+	return buf.String(), runErr
 }
