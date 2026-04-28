@@ -89,9 +89,15 @@ ca add --slot 3                # Save account to a specific slot (prompts before
 ca remove 2                    # Remove account by slot
 ca remove user@example.com     # Remove account by email
 ca purge                       # Remove all claude-account-switcher backup data
+ca update                      # Check latest release and update if newer
+ca update --check-only         # Check update status without modifying binary
+ca update --to v1.2.3          # Update to a specific version
+ca update --to v1.2.3 --force  # Reinstall target version even if same
 ca help                        # Show command help
 ca --version                   # Show tool version
 ```
+
+`ca update` verifies release artifacts with `SHA256SUMS` before replacing the binary.
 
 ## Tips
 
