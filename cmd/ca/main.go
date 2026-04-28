@@ -13,9 +13,11 @@ import (
 	"github.com/lamht09/claude-account-switcher/internal/app"
 	"github.com/lamht09/claude-account-switcher/internal/output"
 	"github.com/lamht09/claude-account-switcher/internal/updatecheck"
+	"github.com/lamht09/claude-account-switcher/internal/updater"
 )
 
 var version = "dev"
+var runUpdater = updater.Run
 
 func main() {
 	switcher := app.NewSwitcher()
@@ -42,8 +44,10 @@ func main() {
 	if err := runAction(cfg, switcher); err != nil {
 		os.Exit(app.ToExitCode(err))
 	}
-	if msg := updatecheck.Check(version); msg != "" {
-		fmt.Fprintln(os.Stderr, msg)
+	if !cfg.update {
+		if msg := updatecheck.Check(version); msg != "" {
+			fmt.Fprintln(os.Stderr, msg)
+		}
 	}
 }
 
@@ -56,6 +60,10 @@ type cliConfig struct {
 	status        bool
 	purge         bool
 	repair        bool
+	update        bool
+	updateTo      string
+	checkOnly     bool
+	forceUpdate   bool
 	tokenStatus   bool
 	slot          int
 	showVersion   bool
@@ -139,6 +147,22 @@ func parseCLIArgs(args []string) (cliConfig, error) {
 			return cfg, fmt.Errorf("unexpected positional arguments for repair: %v", commandArgs)
 		}
 		cfg.repair = true
+	case "update":
+		updateFS := flag.NewFlagSet("update", flag.ContinueOnError)
+		updateFS.SetOutput(os.Stderr)
+		updateFS.StringVar(&cfg.updateTo, "to", "", "")
+		updateFS.BoolVar(&cfg.checkOnly, "check-only", false, "")
+		updateFS.BoolVar(&cfg.forceUpdate, "force", false, "")
+		if err := updateFS.Parse(commandArgs); err != nil {
+			return cfg, err
+		}
+		if len(updateFS.Args()) > 0 {
+			return cfg, fmt.Errorf("unexpected positional arguments for update: %v", updateFS.Args())
+		}
+		if strings.TrimSpace(cfg.updateTo) == "" && cfg.updateTo != "" {
+			return cfg, errors.New("--to cannot be blank")
+		}
+		cfg.update = true
 	case "help":
 		if len(commandArgs) != 0 {
 			return cfg, fmt.Errorf("unexpected positional arguments for help: %v", commandArgs)
@@ -162,13 +186,14 @@ func parseCLIArgs(args []string) (cliConfig, error) {
 		cfg.status,
 		cfg.purge,
 		cfg.repair,
+		cfg.update,
 	} {
 		if enabled {
 			actionCount++
 		}
 	}
 	if actionCount != 1 {
-		return cfg, errors.New("exactly one action is required: add | remove | list | switch | switch-to | status | purge | repair")
+		return cfg, errors.New("exactly one action is required: add | remove | list | switch | switch-to | status | purge | repair | update")
 	}
 	if cfg.removeAccount != "" && !isNumericIdentifier(cfg.removeAccount) && !isValidEmail(cfg.removeAccount) {
 		return cfg, fmt.Errorf("invalid email format: %s", cfg.removeAccount)
@@ -198,6 +223,15 @@ func runAction(cfg cliConfig, switcher *app.Switcher) error {
 		return switcher.Purge()
 	case cfg.repair:
 		return switcher.Repair()
+	case cfg.update:
+		return runUpdater(updater.Options{
+			CurrentVersion: version,
+			ToVersion:      cfg.updateTo,
+			CheckOnly:      cfg.checkOnly,
+			Force:          cfg.forceUpdate,
+			Stdout:         os.Stdout,
+			Stderr:         os.Stderr,
+		})
 	}
 	return errors.New("no action selected")
 }
@@ -266,6 +300,7 @@ func printHelp() {
 	fmt.Println("  status                     Show current live profile")
 	fmt.Println("  purge                      Remove all managed backup data")
 	fmt.Println("  repair                     Repair managed account metadata")
+	fmt.Println("  update [--to V] [--check-only] [--force]  Check and self-update tool")
 	fmt.Println("  help                       Show this help message")
 	fmt.Println("")
 	fmt.Println("Global flags:")

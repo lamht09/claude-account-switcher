@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/lamht09/claude-account-switcher/internal/updater"
 )
 
 func TestFileContainsAny(t *testing.T) {
@@ -129,5 +131,77 @@ func TestParseCLIArgsRepairAction(t *testing.T) {
 	}
 	if !cfg.repair {
 		t.Fatalf("expected repair action enabled, got %#v", cfg)
+	}
+}
+
+func TestParseCLIArgsUpdateFlags(t *testing.T) {
+	cfg, err := parseCLIArgs([]string{"update", "--to", "v1.2.3", "--check-only", "--force"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.update || cfg.updateTo != "v1.2.3" || !cfg.checkOnly || !cfg.forceUpdate {
+		t.Fatalf("unexpected update cfg: %#v", cfg)
+	}
+}
+
+func TestParseCLIArgsUpdateRejectsPositionalArgs(t *testing.T) {
+	_, err := parseCLIArgs([]string{"update", "now"})
+	if err == nil || !strings.Contains(err.Error(), "unexpected positional arguments for update") {
+		t.Fatalf("expected update positional args validation error, got %v", err)
+	}
+}
+
+func TestRunActionUpdateDispatch(t *testing.T) {
+	origRunUpdater := runUpdater
+	defer func() { runUpdater = origRunUpdater }()
+
+	var called bool
+	var got updater.Options
+	runUpdater = func(opts updater.Options) error {
+		called = true
+		got = opts
+		return nil
+	}
+
+	cfg := cliConfig{
+		update:      true,
+		updateTo:    "v2.0.0",
+		checkOnly:   true,
+		forceUpdate: true,
+	}
+	if err := runAction(cfg, nil); err != nil {
+		t.Fatalf("unexpected runAction error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected updater to be called")
+	}
+	if got.ToVersion != "v2.0.0" || !got.CheckOnly || !got.Force {
+		t.Fatalf("unexpected updater options: %#v", got)
+	}
+	if got.CurrentVersion != version {
+		t.Fatalf("unexpected current version: %s", got.CurrentVersion)
+	}
+	if got.Stdout == nil || got.Stderr == nil {
+		t.Fatal("expected stdout/stderr to be set")
+	}
+}
+
+func TestParseCLIArgsUpdateBlankToVersion(t *testing.T) {
+	_, err := parseCLIArgs([]string{"update", "--to", "   "})
+	if err == nil || !strings.Contains(err.Error(), "--to cannot be blank") {
+		t.Fatalf("expected blank to-version error, got %v", err)
+	}
+}
+
+func TestRunActionUpdatePropagatesError(t *testing.T) {
+	origRunUpdater := runUpdater
+	defer func() { runUpdater = origRunUpdater }()
+
+	runUpdater = func(opts updater.Options) error {
+		return errors.New("update failed")
+	}
+	err := runAction(cliConfig{update: true}, nil)
+	if err == nil || !strings.Contains(err.Error(), "update failed") {
+		t.Fatalf("expected update error to propagate, got %v", err)
 	}
 }
