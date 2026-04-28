@@ -91,20 +91,90 @@ func (s *Switcher) Status() error {
 		output.Info("%s %s", output.Accent("Current profile:"), output.Muted("none detected (sign in via Claude Code first)"))
 		return nil
 	}
+	profileLabel := output.Cyan(email)
 	seq, err := s.readSequence()
-	if err != nil {
-		output.Info("%s %s %s", output.Accent("Current profile:"), output.Cyan(email), output.Muted("(outside managed slots)"))
-		return nil
-	}
-	for num, account := range seq.Accounts {
-		if domain.ManagedIdentityMatch(account, email, orgUUID, accountUUID) {
-			output.Info("%s %s %s", output.Accent("Current profile:"), output.Green("slot "+num), output.Muted("("+email+")"))
-			output.Info("%s %s", output.Accent("Managed slots:"), output.Bold(strconv.Itoa(len(seq.Accounts))))
-			return nil
+	if err == nil {
+		for num, account := range seq.Accounts {
+			if domain.ManagedIdentityMatch(account, email, orgUUID, accountUUID) {
+				profileLabel = output.Green("slot " + num)
+				output.Info("%s %s %s", output.Accent("Current profile:"), profileLabel, output.Muted("("+email+")"))
+				output.Info("%s %s", output.Accent("Managed slots:"), output.Bold(strconv.Itoa(len(seq.Accounts))))
+				s.printStatusUsageAndOAuth(email, orgUUID, accountUUID)
+				return nil
+			}
 		}
 	}
-	output.Info("%s %s %s", output.Accent("Current profile:"), output.Cyan(email), output.Muted("(outside managed slots)"))
+	output.Info("%s %s %s", output.Accent("Current profile:"), profileLabel, output.Muted("(outside managed slots)"))
+	s.printStatusUsageAndOAuth(email, orgUUID, accountUUID)
 	return nil
+}
+
+func (s *Switcher) printStatusUsageAndOAuth(email, orgUUID, accountUUID string) {
+	creds, credsErr := s.store.ReadLiveCredentials()
+	usage := (*oauth.UsageResult)(nil)
+	if credsErr == nil && creds != "" {
+		usage, _, _ = fetchUsageForAccount(creds, true)
+	}
+	output.Info("%s", output.Accent("Usage:"))
+	printUsageSummary("  ", usage)
+
+	output.Info("%s %s", output.Accent("OAuth:"), output.Muted(fmt.Sprintf("email=%s org=%s account=%s", email, nonEmpty(orgUUID), nonEmpty(accountUUID))))
+	tokenStatus := "oauth: unavailable"
+	if credsErr == nil {
+		if resolved := oauth.BuildTokenStatus(creds); resolved != "" {
+			tokenStatus = resolved
+		}
+	}
+	output.Info("  %s %s", output.Dim("•"), output.Dim(tokenStatus))
+}
+
+func printUsageSummary(prefix string, usage *oauth.UsageResult) {
+	if usage == nil {
+		output.Info("%s%s", prefix, output.Dim(output.Italic("usage stats unavailable")))
+		return
+	}
+	usageLines := 0
+	if usage.FiveHour != nil {
+		usageLines++
+	}
+	if usage.SevenDay != nil {
+		usageLines++
+	}
+	usageLineNo := 0
+	if usage.FiveHour != nil {
+		usageLineNo++
+		connector := "└"
+		if usageLineNo < usageLines {
+			connector = "├"
+		}
+		if usage.FiveHour.Clock != "" {
+			output.Info(
+				"%s%s %s",
+				prefix,
+				output.Dim(connector),
+				output.Dim(fmt.Sprintf("5h: %3.0f%%   resets %-12s  in %s", usage.FiveHour.Pct, usage.FiveHour.Clock, usage.FiveHour.Countdown)),
+			)
+		} else {
+			output.Info("%s%s %s", prefix, output.Dim(connector), output.Dim(fmt.Sprintf("5h: %3.0f%%", usage.FiveHour.Pct)))
+		}
+	}
+	if usage.SevenDay != nil {
+		usageLineNo++
+		connector := "└"
+		if usageLineNo < usageLines {
+			connector = "├"
+		}
+		if usage.SevenDay.Clock != "" {
+			output.Info(
+				"%s%s %s",
+				prefix,
+				output.Dim(connector),
+				output.Dim(fmt.Sprintf("7d: %3.0f%%   resets %-12s  in %s", usage.SevenDay.Pct, usage.SevenDay.Clock, usage.SevenDay.Countdown)),
+			)
+		} else {
+			output.Info("%s%s %s", prefix, output.Dim(connector), output.Dim(fmt.Sprintf("7d: %3.0f%%", usage.SevenDay.Pct)))
+		}
+	}
 }
 
 func (s *Switcher) Debug() error {
@@ -335,50 +405,7 @@ func (s *Switcher) List(showToken bool) error {
 				usageCache[usageKey] = usage
 			}
 		}
-		if usage == nil {
-			output.Info("     %s", output.Dim(output.Italic("usage stats unavailable")))
-		} else {
-			usageLines := 0
-			if usage.FiveHour != nil {
-				usageLines++
-			}
-			if usage.SevenDay != nil {
-				usageLines++
-			}
-			usageLineNo := 0
-			if usage.FiveHour != nil {
-				usageLineNo++
-				connector := "└"
-				if usageLineNo < usageLines {
-					connector = "├"
-				}
-				if usage.FiveHour.Clock != "" {
-					output.Info(
-						"     %s %s",
-						output.Dim(connector),
-						output.Dim(fmt.Sprintf("5h: %3.0f%%   resets %-12s  in %s", usage.FiveHour.Pct, usage.FiveHour.Clock, usage.FiveHour.Countdown)),
-					)
-				} else {
-					output.Info("     %s %s", output.Dim(connector), output.Dim(fmt.Sprintf("5h: %3.0f%%", usage.FiveHour.Pct)))
-				}
-			}
-			if usage.SevenDay != nil {
-				usageLineNo++
-				connector := "└"
-				if usageLineNo < usageLines {
-					connector = "├"
-				}
-				if usage.SevenDay.Clock != "" {
-					output.Info(
-						"     %s %s",
-						output.Dim(connector),
-						output.Dim(fmt.Sprintf("7d: %3.0f%%   resets %-12s  in %s", usage.SevenDay.Pct, usage.SevenDay.Clock, usage.SevenDay.Countdown)),
-					)
-				} else {
-					output.Info("     %s %s", output.Dim(connector), output.Dim(fmt.Sprintf("7d: %3.0f%%", usage.SevenDay.Pct)))
-				}
-			}
-		}
+		printUsageSummary("     ", usage)
 
 		if showToken {
 			tokenStatus := oauth.BuildTokenStatus(creds)
