@@ -33,12 +33,12 @@ type cacheBody struct {
 }
 
 func Check(currentVersion string) string {
-	latest := readCache()
-	if latest == "" {
+	latest, cached := readCache()
+	if !cached {
 		latest = fetchLatest()
+		// Source parity: cache both success and failure states after a fresh fetch.
+		writeCache(latest)
 	}
-	// Source parity: cache both success and failure states.
-	writeCache(latest)
 	if latest == "" {
 		return ""
 	}
@@ -52,19 +52,19 @@ func cachePath() string {
 	return filepath.Join(platform.BackupRoot(), "cache", "update-check.json")
 }
 
-func readCache() string {
+func readCache() (string, bool) {
 	raw, err := os.ReadFile(cachePath())
 	if err != nil {
-		return ""
+		return "", false
 	}
 	var data cacheBody
 	if err := json.Unmarshal(raw, &data); err != nil {
-		return ""
+		return "", false
 	}
 	if time.Since(time.Unix(int64(data.Timestamp), 0)) > cacheTTL {
-		return ""
+		return "", false
 	}
-	return data.Data
+	return data.Data, true
 }
 
 func writeCache(tag string) {
