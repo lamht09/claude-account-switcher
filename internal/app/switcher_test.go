@@ -150,8 +150,8 @@ func TestResolveManagedIdentifierAmbiguousNonTTY(t *testing.T) {
 	t.Cleanup(func() { stdinIsTTY = origTTY })
 	seq := &domain.SequenceData{
 		Accounts: map[string]domain.Account{
-			"1": {Email: "same@example.com", OrganizationUUID: "org-1"},
-			"2": {Email: "same@example.com", OrganizationUUID: "org-2"},
+			"1": {Email: "same@example.com", OrganizationUUID: "org-1", UUID: "acc-1"},
+			"2": {Email: "same@example.com", OrganizationUUID: "org-2", UUID: "acc-2"},
 		},
 	}
 	_, err := sw.resolveManagedIdentifier(seq, "same@example.com", "switch")
@@ -248,8 +248,8 @@ func TestResolveManagedIdentifierAmbiguousInteractive(t *testing.T) {
 	sw := setupTestSwitcher(t)
 	seq := &domain.SequenceData{
 		Accounts: map[string]domain.Account{
-			"1": {Email: "same@example.com", OrganizationUUID: "org-1"},
-			"2": {Email: "same@example.com", OrganizationUUID: "org-2"},
+			"1": {Email: "same@example.com", OrganizationUUID: "org-1", UUID: "acc-1"},
+			"2": {Email: "same@example.com", OrganizationUUID: "org-2", UUID: "acc-2"},
 		},
 	}
 
@@ -285,8 +285,8 @@ func TestResolveManagedIdentifierAmbiguousInteractiveInvalidSelection(t *testing
 	sw := setupTestSwitcher(t)
 	seq := &domain.SequenceData{
 		Accounts: map[string]domain.Account{
-			"1": {Email: "same@example.com", OrganizationUUID: "org-1"},
-			"2": {Email: "same@example.com", OrganizationUUID: "org-2"},
+			"1": {Email: "same@example.com", OrganizationUUID: "org-1", UUID: "acc-1"},
+			"2": {Email: "same@example.com", OrganizationUUID: "org-2", UUID: "acc-2"},
 		},
 	}
 
@@ -525,7 +525,10 @@ func TestAddStoresAccountUUID(t *testing.T) {
 	}
 }
 
-func TestSwitchUsesAccountUUIDWhenOrganizationDiffers(t *testing.T) {
+// TestSwitchRotatesWhenSequenceOrgMatchesLive checks rotation when live identity
+// matches a managed slot on (accountUuid + organizationUuid). Sequence metadata
+// must align with the live org; stale org-only drift is no longer treated as the same row.
+func TestSwitchRotatesWhenSequenceOrgMatchesLive(t *testing.T) {
 	sw := setupTestSwitcher(t)
 
 	liveCfgPath := filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), ".claude.json")
@@ -546,7 +549,7 @@ func TestSwitchUsesAccountUUIDWhenOrganizationDiffers(t *testing.T) {
 	if err := sw.store.WriteAccountBackup("1", "a@example.com", mustJSON(t, map[string]any{
 		"oauthAccount": map[string]any{
 			"emailAddress":     "a@example.com",
-			"organizationUuid": "org-old",
+			"organizationUuid": "org-current",
 			"accountUuid":      "acc-stable",
 		},
 	}), `{"claudeAiOauth":{"accessToken":"a-backup"}}`); err != nil {
@@ -566,7 +569,7 @@ func TestSwitchUsesAccountUUIDWhenOrganizationDiffers(t *testing.T) {
 		Sequence:            []int{1, 2},
 		ActiveAccountNumber: intPtr(2),
 		Accounts: map[string]domain.Account{
-			"1": {Email: "a@example.com", OrganizationUUID: "org-old", UUID: "acc-stable"},
+			"1": {Email: "a@example.com", OrganizationUUID: "org-current", UUID: "acc-stable"},
 			"2": {Email: "b@example.com", OrganizationUUID: "org-b", UUID: "acc-b"},
 		},
 	}
@@ -575,7 +578,7 @@ func TestSwitchUsesAccountUUIDWhenOrganizationDiffers(t *testing.T) {
 	}
 
 	if err := sw.Switch(); err != nil {
-		t.Fatalf("switch should succeed by matching account UUID: %v", err)
+		t.Fatalf("switch should succeed when live matches slot 1 on uuid+org: %v", err)
 	}
 
 	cfg, _, err := sw.store.ReadLiveConfig()
@@ -589,7 +592,7 @@ func TestSwitchUsesAccountUUIDWhenOrganizationDiffers(t *testing.T) {
 	}
 }
 
-func TestAddDeduplicatesByAccountUUID(t *testing.T) {
+func TestAddRefreshesWhenSameUUIDAndSameOrg(t *testing.T) {
 	sw := setupTestSwitcher(t)
 
 	setLiveAccount(t, sw, "same@example.com", "org-a", "Org A", "token-a")
@@ -597,7 +600,42 @@ func TestAddDeduplicatesByAccountUUID(t *testing.T) {
 		t.Fatalf("add first account: %v", err)
 	}
 
-	// Same account UUID, but org changed in live config.
+	setLiveAccount(t, sw, "same@example.com", "org-a", "Org A", "token-refreshed")
+	if err := sw.Add(0); err != nil {
+		t.Fatalf("add same uuid+org should refresh existing slot: %v", err)
+	}
+
+	seq, err := sw.readSequence()
+	if err != nil {
+		t.Fatalf("read sequence: %v", err)
+	}
+	if len(seq.Accounts) != 1 {
+		t.Fatalf("expected single managed slot, got %d", len(seq.Accounts))
+	}
+	acc, ok := seq.Accounts["1"]
+	if !ok {
+		t.Fatalf("expected slot 1, got %+v", seq.Accounts)
+	}
+	if acc.UUID != "acc-org-a" || acc.OrganizationUUID != "org-a" {
+		t.Fatalf("unexpected metadata: %+v", acc)
+	}
+	_, creds, err := sw.store.ReadAccountBackup("1", "same@example.com")
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if !strings.Contains(creds, "token-refreshed") {
+		t.Fatalf("expected refreshed token in backup, got %s", creds)
+	}
+}
+
+func TestAddSameUUIDDifferentOrgCreatesSecondSlot(t *testing.T) {
+	sw := setupTestSwitcher(t)
+
+	setLiveAccount(t, sw, "same@example.com", "org-a", "Org A", "token-a")
+	if err := sw.Add(0); err != nil {
+		t.Fatalf("add first account: %v", err)
+	}
+
 	liveCfgPath := filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), ".claude.json")
 	cfg := map[string]any{
 		"oauthAccount": map[string]any{
@@ -606,6 +644,7 @@ func TestAddDeduplicatesByAccountUUID(t *testing.T) {
 			"organizationName": "Org B",
 			"accountUuid":      "acc-org-a",
 		},
+		"theme": "dark",
 	}
 	if err := sw.store.WriteLiveConfig(liveCfgPath, cfg); err != nil {
 		t.Fatalf("write updated live config: %v", err)
@@ -615,22 +654,31 @@ func TestAddDeduplicatesByAccountUUID(t *testing.T) {
 	}
 
 	if err := sw.Add(0); err != nil {
-		t.Fatalf("add same UUID account second time: %v", err)
+		t.Fatalf("add same UUID different org: %v", err)
 	}
 
 	seq, err := sw.readSequence()
 	if err != nil {
 		t.Fatalf("read sequence: %v", err)
 	}
-	if len(seq.Accounts) != 1 {
-		t.Fatalf("expected single managed slot for same account UUID, got %d", len(seq.Accounts))
+	if len(seq.Accounts) != 2 {
+		t.Fatalf("expected two managed slots (distinct uuid+org identities), got %d", len(seq.Accounts))
 	}
-	acc, ok := seq.Accounts["1"]
-	if !ok {
-		t.Fatalf("expected existing slot 1 to be refreshed, got %+v", seq.Accounts)
+}
+
+func TestAccountNumberByIdentitySameEmailDifferentOrgs(t *testing.T) {
+	sw := setupTestSwitcher(t)
+	seq := &domain.SequenceData{
+		Accounts: map[string]domain.Account{
+			"1": {Email: "dup@example.com", OrganizationUUID: "org-1", UUID: "uuid-1"},
+			"2": {Email: "dup@example.com", OrganizationUUID: "org-2", UUID: "uuid-2"},
+		},
 	}
-	if acc.UUID != "acc-org-a" {
-		t.Fatalf("expected UUID to stay acc-org-a, got %q", acc.UUID)
+	if got := sw.accountNumberByIdentity(seq, "dup@example.com", "org-2", "uuid-2"); got != "2" {
+		t.Fatalf("accountNumberByIdentity for org-2: got %q, want 2", got)
+	}
+	if got := sw.accountNumberByIdentity(seq, "dup@example.com", "org-1", "uuid-1"); got != "1" {
+		t.Fatalf("accountNumberByIdentity for org-1: got %q, want 1", got)
 	}
 }
 
@@ -800,6 +848,60 @@ func TestRepairRebuildsActiveSlotBackup(t *testing.T) {
 	}
 	if !strings.Contains(creds, "token-live") {
 		t.Fatalf("expected repaired live token, got %s", creds)
+	}
+}
+
+func TestRepairReconcilesFingerprintsToMetadata(t *testing.T) {
+	sw := setupTestSwitcher(t)
+	const (
+		email = "user@example.com"
+		org   = "b482de13-49cb-4d81-9510-8b9c89f1948d"
+		acc   = "1c5ac151-6d1a-489f-8da1-84ee1514c0eb"
+	)
+	wrongFP := "uuid-org:" + acc + "|3501f6ef-b332-499f-b151-fbd836cf4b5c"
+	wantFP := domain.AccountFingerprint(acc, org, email)
+
+	cfg := mustJSON(t, map[string]any{
+		"oauthAccount": map[string]any{
+			"emailAddress":     email,
+			"organizationUuid": org,
+			"accountUuid":      acc,
+		},
+	})
+	if err := sw.store.WriteAccountBackup("1", email, cfg, `{"claudeAiOauth":{"accessToken":"tok"}}`); err != nil {
+		t.Fatalf("write backup: %v", err)
+	}
+	if err := sw.store.WriteSequence(&domain.SequenceData{
+		Sequence:            []int{1},
+		ActiveAccountNumber: intPtr(1),
+		Accounts: map[string]domain.Account{
+			"1": {
+				Email:            email,
+				UUID:             acc,
+				OrganizationUUID: org,
+				OrganizationName: "Org",
+				Fingerprint:      wrongFP,
+				Added:            "2026-01-01T00:00:00Z",
+			},
+		},
+		SlotFingerprints: map[string]string{"1": wrongFP},
+	}); err != nil {
+		t.Fatalf("write seq: %v", err)
+	}
+
+	if err := sw.Repair(); err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	seq, err := sw.readSequence()
+	if err != nil {
+		t.Fatalf("read sequence: %v", err)
+	}
+	acc1 := seq.Accounts["1"]
+	if acc1.Fingerprint != wantFP {
+		t.Fatalf("account fingerprint: got %q want %q", acc1.Fingerprint, wantFP)
+	}
+	if seq.SlotFingerprints["1"] != wantFP {
+		t.Fatalf("slotFingerprints: got %q want %q", seq.SlotFingerprints["1"], wantFP)
 	}
 }
 

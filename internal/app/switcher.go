@@ -86,7 +86,7 @@ func (s *Switcher) readSequence() (*domain.SequenceData, error) {
 }
 
 func (s *Switcher) Status() error {
-	email, orgUUID, _, err := s.currentIdentity()
+	email, orgUUID, accountUUID, err := s.currentIdentity()
 	if err != nil {
 		output.Info("%s %s", output.Accent("Current profile:"), output.Muted("none detected (sign in via Claude Code first)"))
 		return nil
@@ -97,7 +97,7 @@ func (s *Switcher) Status() error {
 		return nil
 	}
 	for num, account := range seq.Accounts {
-		if account.Email == email && account.OrganizationUUID == orgUUID {
+		if domain.ManagedIdentityMatch(account, email, orgUUID, accountUUID) {
 			output.Info("%s %s %s", output.Accent("Current profile:"), output.Green("slot "+num), output.Muted("("+email+")"))
 			output.Info("%s %s", output.Accent("Managed slots:"), output.Bold(strconv.Itoa(len(seq.Accounts))))
 			return nil
@@ -1030,43 +1030,23 @@ var stdinIsTTY = defaultIsTTY
 var fetchUsageForAccount = oauth.FetchUsageForAccount
 
 func (s *Switcher) accountNumberByIdentity(seq *domain.SequenceData, email, orgUUID, accountUUID string) string {
-	_ = email
-	target := domain.IdentityKey(accountUUID, orgUUID)
-	if target == "" {
+	if strings.TrimSpace(accountUUID) == "" {
 		return ""
 	}
-	uuidMatches := make([]string, 0)
+	matches := make([]string, 0, len(seq.Accounts))
 	for num, account := range seq.Accounts {
-		if strings.TrimSpace(account.UUID) == strings.TrimSpace(accountUUID) {
-			uuidMatches = append(uuidMatches, num)
+		if domain.ManagedIdentityMatch(account, email, orgUUID, accountUUID) {
+			matches = append(matches, num)
 		}
 	}
-	if len(uuidMatches) == 1 {
-		return uuidMatches[0]
-	}
-	for _, num := range uuidMatches {
-		account := seq.Accounts[num]
-		if strings.TrimSpace(account.OrganizationUUID) != "" &&
-			strings.TrimSpace(orgUUID) != "" &&
-			strings.TrimSpace(account.OrganizationUUID) == strings.TrimSpace(orgUUID) {
-			return num
-		}
+	if len(matches) == 1 {
+		return matches[0]
 	}
 	return ""
 }
 
 func (s *Switcher) accountIdentityMatches(account domain.Account, email, orgUUID, accountUUID string) bool {
-	_ = email
-	if strings.TrimSpace(account.UUID) == "" || strings.TrimSpace(accountUUID) == "" {
-		return false
-	}
-	if strings.TrimSpace(account.UUID) != strings.TrimSpace(accountUUID) {
-		return false
-	}
-	if strings.TrimSpace(account.OrganizationUUID) == "" || strings.TrimSpace(orgUUID) == "" {
-		return true
-	}
-	return strings.TrimSpace(account.OrganizationUUID) == strings.TrimSpace(orgUUID)
+	return domain.ManagedIdentityMatch(account, email, orgUUID, accountUUID)
 }
 
 func (s *Switcher) resolveManagedIdentifier(seq *domain.SequenceData, identifier, action string) (string, error) {
@@ -1286,16 +1266,23 @@ func (s *Switcher) ensureSequenceFingerprints(seq *domain.SequenceData) bool {
 		changed = true
 	}
 	for slotKey, account := range seq.Accounts {
-		fp := account.Fingerprint
-		if fp == "" {
-			fp = domain.AccountFingerprint(account.UUID, account.OrganizationUUID, account.Email)
+		// Always reconcile from uuid + organizationUuid in metadata. Older rows could
+		// carry a non-empty fingerprint that disagrees with organizationUuid (e.g. wrong
+		// org segment); repair and readSequence rely on this staying canonical.
+		canonical := domain.AccountFingerprint(account.UUID, account.OrganizationUUID, account.Email)
+		fp := canonical
+		if fp == "" && strings.TrimSpace(account.Fingerprint) != "" {
+			fp = strings.TrimSpace(account.Fingerprint)
 		}
-		if fp != "" && account.Fingerprint != fp {
+		if fp == "" {
+			continue
+		}
+		if account.Fingerprint != fp {
 			account.Fingerprint = fp
 			seq.Accounts[slotKey] = account
 			changed = true
 		}
-		if fp != "" && seq.SlotFingerprints[slotKey] != fp {
+		if seq.SlotFingerprints[slotKey] != fp {
 			seq.SlotFingerprints[slotKey] = fp
 			changed = true
 		}
@@ -1389,6 +1376,9 @@ func (s *Switcher) Repair() error {
 			return err
 		}
 		changed := s.ensureSequenceFingerprints(seq)
+		if changed {
+			output.Info("%s", output.Green("Repaired sequence fingerprints"), output.Muted("(aligned to account uuid + organizationUuid in metadata)"))
+		}
 		warnings := s.collectCredentialHealthWarnings(seq)
 		if len(warnings) == 0 {
 			output.Info("%s", output.Green("No credential drift found."))
