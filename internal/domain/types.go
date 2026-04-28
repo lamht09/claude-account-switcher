@@ -98,3 +98,41 @@ func IdentityKey(accountUUID, organizationUUID string) string {
 func AccountFingerprint(accountUUID, organizationUUID, _ string) string {
 	return IdentityKey(accountUUID, organizationUUID)
 }
+
+// ManagedIdentityMatch reports whether a stored managed row refers to the same
+// logical account as the live Claude identity (email, organizationUuid, accountUuid).
+//
+// Matching rules (in order of evaluation):
+//  1. Strict (uuid + organizationUuid): when both stored and live have non-empty
+//     organization UUIDs, require equal account UUIDs and equal organization UUIDs.
+//  2. Legacy (stored org missing): when stored organizationUuid is empty but stored
+//     account UUID equals live account UUID, treat as the same row (aligns with
+//     IdentityKey "uuid:<uuid>" fingerprints from older data).
+//  3. Fallback (email + organizationUuid): when stored account UUID is empty,
+//     match on NormalizeEmail(stored email) == NormalizeEmail(live email) and equal
+//     non-empty organization UUIDs on both sides.
+//  4. Otherwise, including same UUID with both orgs set but different values: false.
+//     When live organizationUuid is empty but stored org is non-empty, returns false.
+func ManagedIdentityMatch(stored Account, liveEmail, liveOrg, liveUUID string) bool {
+	su := strings.TrimSpace(stored.UUID)
+	so := strings.TrimSpace(stored.OrganizationUUID)
+	lu := strings.TrimSpace(liveUUID)
+	lo := strings.TrimSpace(liveOrg)
+
+	if su == "" {
+		if so == "" || lo == "" {
+			return false
+		}
+		return NormalizeEmail(stored.Email) == NormalizeEmail(liveEmail) && so == lo
+	}
+	if su != lu {
+		return false
+	}
+	if so == "" {
+		return true
+	}
+	if lo == "" {
+		return false
+	}
+	return so == lo
+}
